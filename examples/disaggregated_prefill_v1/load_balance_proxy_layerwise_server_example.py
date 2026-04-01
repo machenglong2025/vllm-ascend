@@ -98,9 +98,9 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse,PlainTextResponse
 from vllm.logger import init_logger
-
+from metrics_aggregator import MetricsAggregator
 logger = init_logger(__name__)
 
 # Add uvloop for faster event loop if available
@@ -153,6 +153,8 @@ class ProxyState:
         heapq.heapify(self.decoder_heap)
         self.req_id_future = {}
         self.req_data_dict = {}
+        self.prefiller_aggregator = MetricsAggregator(lambda: [f"http://{i.host}:{i.port}/metrics" for i in self.prefillers])
+        self.decoder_aggregator = MetricsAggregator(lambda: [f"http://{i.host}:{i.port}/metrics" for i in self.decoders])
 
     def _update_prefiller_priority(self, server_idx: int):
         """Update the priority of a prefiller server in the heap."""
@@ -606,6 +608,13 @@ async def metaserver(request: Request):
         proxy_state.release_prefiller(prefiller_idx, prefiller_score)
         proxy_state.release_prefiller_kv(prefiller_idx, prefiller_score)
 
+@app.get("/metrics",response_class=PlainTextResponse)
+async def aggregated_metrics():
+    prefiller_metrics = proxy_state.prefiller_aggregator.aggregate_metrics({"role":"prefiller"})
+    prefiller_metrics_str=proxy_state.prefiller_aggregator.format_as_prometheus(prefiller_metrics)
+    decoder_metrics = proxy_state.decoder_aggregator.aggregate_metrics({"role":"decoder"})
+    decoder_metrics_str=proxy_state.decoder_aggregator.format_as_prometheus(decoder_metrics)
+    return  prefiller_metrics_str +"\n"+ decoder_metrics_str
 
 if __name__ == "__main__":
     global global_args
